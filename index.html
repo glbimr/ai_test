@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISB Quiz-1</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        /* General Setup */
+        #app { min-height: 100vh; }
+        
+        /* Quiz Timer Styles */
+        #progressBarContainer { position: relative; height: 8px; background-color: #e5e7eb; border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
+        #progressBar { height: 100%; width: 100%; background-color: #ef4444; transition: width 1s linear; }
+        /* Adjusted timer style for total time */
+        #countdownTimer { 
+            font-size: 1.25rem; 
+            font-weight: 700; 
+            color: #ef4444; 
+            text-align: center; /* Center the total timer */
+            margin-bottom: 10px; 
+            padding: 8px;
+            border: 2px solid #ef4444;
+            border-radius: 8px;
+            background-color: #fee2e2;
+        }
+        
+        /* Loading Overlay */
+        #loadingOverlay {
+            position: fixed; inset: 0; background: rgba(255,255,255,0.95); 
+            z-index: 50; display: none; flex-direction: column; justify-content: center; align-items: center;
+        }
+        
+        /* Violation Modal */
+        #violationModal, #quizOffModal {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.5); 
+            z-index: 55; display: none; justify-content: center; align-items: center;
+        }
+        .modal-content {
+            background: white; padding: 2.5rem; border-radius: 1rem; max-width: 90%; width: 400px; text-align: center;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+
+        /* Spinner */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px; height: 36px; border-radius: 50%; border-left-color: #f59e0b;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Question Panel Button Style - MODIFIED */
+        .q-panel-btn {
+            width: 40px; 
+            height: 40px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-weight: 600; 
+            border-radius: 0.5rem; 
+            transition: all 0.2s;
+            position: relative;
+            border: 2px solid transparent; /* Base border */
+        }
+        /* New Status Colors */
+        .q-panel-btn.unvisited { background-color: #e5e7eb; color: #6b7280; } /* Gray */
+        .q-panel-btn.viewed { background-color: #fcd34d; color: #78350f; } /* Yellow */
+        .q-panel-btn.answered { background-color: #10b981; color: white; } /* Green */
+        .q-panel-btn.current { 
+            background-color: #3b82f6; 
+            color: white; 
+            border-color: #1d4ed8; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .q-panel-btn.current.flagged {
+             border-color: #b91c1c; /* Darker red for current + flagged */
+             box-shadow: 0 4px 6px -1px rgba(185, 28, 28, 0.5);
+        }
+        /* Flag Icon Style */
+        .q-panel-btn .flag-icon {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            color: #b91c1c; /* Dark Red for flag */
+            font-size: 0.8rem;
+            text-shadow: 0 0 3px rgba(255,255,255,0.8);
+        }
+        .q-panel-btn:not(.current):hover { transform: scale(1.05); }
+        .q-panel-btn.flagged:not(.current) { border-color: #b91c1c; } /* Red border for flagged */
+
+        /* ADDED: Print Styles: Hide control buttons when printing */
+        @media print {
+            .no-print {
+                display: none !important;
+            }
+            /* Ensure the report content is fully visible and clean */
+            #app {
+                margin: 0;
+                padding: 0;
+                min-height: auto;
+            }
+            .w-full.max-w-6xl {
+                box-shadow: none !important;
+                border: none !important;
+                padding: 0 !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        </div>
+
+    <div id="loadingOverlay">
+        <div class="spinner mb-4"></div>
+        <p class="text-gray-700 font-semibold">Processing...</p>
+    </div>
+
+    <div id="violationModal">
+        <div class="modal-content">
+            <i class="fas fa-exclamation-triangle text-yellow-500 text-4xl mb-4"></i>
+            <div id="violationMessage" class="mb-6"></div>
+            <button id="modalConfirmBtn"></button>
+        </div>
+    </div>
+
+    <div id="quizOffModal">
+        <div class="modal-content">
+            <i class="fas fa-exclamation-circle text-red-500 text-4xl mb-4"></i>
+            <p class="text-xl font-bold text-gray-900 mb-3">Quiz Not Started</p>
+            <div id="quizOffMessage" class="mb-6 text-gray-700"></div>
+            <button id="quizOffConfirmBtn" class="w-full py-3 px-4 rounded-lg text-white font-bold bg-gray-500 hover:bg-gray-600 transition shadow-md">Close</button>
+        </div>
+    </div>
+
+    <script>
+        // --- SUPABASE CONFIGURATION ---
+        const SUPABASE_URL = 'https://tdxausibwaagbhnbgkgz.supabase.co'; 
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRkeGF1c2lid2FhZ2JobmJna2d6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMwNDgyMDYsImV4cCI6MjA3ODYyNDIwNn0.ApeJFTg-pQaV2gigOUTGpKnMY_AFnT1v5DPpYCCmOKY';
+        
+        const SUPABASE_SUBMISSIONS_TABLE = 'quiz_submissions'; 
+        const SUPABASE_QUESTIONS_TABLE = 'quiz_questions';
+        const STATIC_QUIZ_UUID = '5f4b3d2c-1a0e-9f8d-7c6b-5a4e3d2c1b0a';
+        const SUPABASE_STATUS_TABLE = 'quiz_status'; // <<< ADDED: Supabase table for global status
+
+        // Initialize Supabase client
+        const { createClient } = supabase;
+        const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // --- QUIZ DATA ---
+        let quizQuestions = []; 
+
+        // --- STATE ---
+        let studentInfo = {};
+        let currentQuestionIndex = 0;
+        let studentResponses = []; 
+        let questionStatus = []; // New array to track status: 0=unvisited, 1=viewed, 2=answered
+        let questionFlags = []; // New array to track flags: false=not flagged, true=flagged
+        let timerInterval;
+        
+        // MODIFIED: Total Quiz Time (20 minutes = 1200 seconds)
+        const TOTAL_QUIZ_TIME = 20 * 60; 
+        let timeLeft = TOTAL_QUIZ_TIME; 
+        let isTimerRunning = false; 
+        let isQuizSubmitted = false; // <<< ADDED: Flag to prevent violations after submission
+
+        // ADDED: State to track question timing
+        let questionTimings = [];
+        let currentQuestionStartTime = Date.now(); // Start time for the currently viewed question
+        // >>> END ADDED
+
+        // Allows Admin to globally toggle the quiz state
+        let isQuizActive = null; // <<< MODIFIED: Initialize as null, status will be fetched from DB
+        
+        let proctoringViolations = { total: 0, windowSwitch: 0, copyPaste: 0 };
+        const MAX_VIOLATIONS = 3;
+        
+        const WINDOW_SWITCH_COOLDOWN = 500; 
+        const EXTENSION_CHECK_INTERVAL = 500; 
+        
+        let violationCooldown = false; 
+        let extensionCheckInterval; 
+        
+        // Universal Edge Thresholds for swipe detection
+        const EDGE_THRESHOLD = 50; 
+        const TOP_EDGE_THRESHOLD = 50; 
+
+        // DOM Elements
+        const APP_CONTAINER = document.getElementById('app');
+        const VIOLATION_MODAL = document.getElementById('violationModal');
+        const MODAL_CONFIRM_BTN = document.getElementById('modalConfirmBtn');
+        const VIOLATION_MESSAGE = document.getElementById('violationMessage');
+        const QUIZ_OFF_MODAL = document.getElementById('quizOffModal');
+        const QUIZ_OFF_CONFIRM_BTN = document.getElementById('quizOffConfirmBtn');
+        const LOADING_OVERLAY = document.getElementById('loadingOverlay');
+
+        // --- UTILITIES ---
+
+        function generateUUID() {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+        }
+
+        function formatTime(seconds) {
+            const min = Math.floor(seconds / 60);
+            const sec = seconds % 60;
+            return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+        }
+
+        function setView(viewName) {
+            VIOLATION_MODAL.style.display = 'none';
+            QUIZ_OFF_MODAL.style.display = 'none'; 
+            LOADING_OVERLAY.style.display = 'none';
+
+            APP_CONTAINER.innerHTML = '';
+
+            // Stop timer if switching away from the quiz
+            if (viewName !== 'quiz') stopTotalTimer();
+
+            if (viewName === 'signin') renderSignIn();
+            else if (viewName === 'proctoringRules') renderProctoringRules(); 
+            else if (viewName === 'quiz') renderQuiz();
+            else if (viewName === 'admin') renderAdminLogin();
+            else if (viewName === 'leaderboard') renderLeaderboard(); 
+        }
+
+        function showQuizOffModal() {
+            const msg = document.getElementById('quizOffMessage');
+            if (msg) {
+                msg.innerHTML = "The admin has <strong class='text-red-500'>turned OFF</strong> the exam sign-in.<br><br>Please wait for further instructions.";
+            }
+            QUIZ_OFF_MODAL.style.display = 'flex';
+        }
+
+        function showTempMessage(msg, isError = false) {
+            let tempDiv = document.getElementById('tempMessage');
+            if (!tempDiv) {
+                tempDiv = document.createElement('div');
+                tempDiv.id = 'tempMessage';
+                tempDiv.className = `fixed top-20 left-1/2 transform -translate-x-1/2 text-white px-6 py-3 rounded-lg shadow-xl z-[60] transition-opacity duration-300 font-medium`;
+                document.body.appendChild(tempDiv);
+            }
+            tempDiv.className = `fixed top-20 left-1/2 transform -translate-x-1/2 text-white px-6 py-3 rounded-lg shadow-xl z-[60] transition-opacity duration-300 font-medium ${isError ? 'bg-red-600' : 'bg-green-600'}`;
+            tempDiv.textContent = msg;
+            tempDiv.style.opacity = '1';
+            setTimeout(() => { tempDiv.style.opacity = '0'; }, 4000);
+        }
+
+        function saveResultLocally(name, email, admissionNo, score, totalQuestions, violations) {
+            const leaderboard = JSON.parse(localStorage.getItem('quizLeaderboard') || '[]');
+            const percentageVal = ((score / totalQuestions) * 100).toFixed(2);
+            const result = {
+                name, email, admissionNo, score, total: totalQuestions,
+                percentage: percentageVal,
+                violations: violations.total, 
+                windowSwitchViolations: violations.windowSwitch, 
+                copyPasteViolations: violations.copyPaste,
+                timestamp: new Date().toLocaleString()
+            };
+            leaderboard.push(result);
+            leaderboard.sort((a, b) => b.score - a.score || new Date(a.timestamp) - new Date(b.timestamp));
+            localStorage.setItem('quizLeaderboard', JSON.stringify(leaderboard));
+            return result; 
+        }
+
+        // <<< ADDED: Function to fetch the global quiz active status
+        async function fetchQuizActiveStatus() {
+            try {
+                // Assuming you have a table 'quiz_status' with a single row and a column 'is_active' and ID=1
+                const { data, error } = await client
+                    .from(SUPABASE_STATUS_TABLE)
+                    .select('is_active')
+                    .limit(1)
+                    .single();
+
+                // PGRST116 is 'No rows returned' which can happen if the table is empty
+                if (error && error.code !== 'PGRST116') throw error; 
+                
+                // Default to true if no data found (safer approach)
+                isQuizActive = (data && data.is_active !== null) ? data.is_active : true; 
+                return isQuizActive;
+                
+            } catch (e) {
+                console.error('Fetch Quiz Status Exception:', e);
+                showTempMessage("Failed to load quiz status. Assuming ON.", true);
+                isQuizActive = true;
+                return isQuizActive;
+            }
+        }
+        // END ADDED >>>
+
+
+        // --- DATABASE UPLOAD LOGIC ---
+        // MODIFIED: Accepts detailedResponses (for student_responses_json) and timeLeftSeconds (for time_left_seconds)
+        async function uploadResultToSupabase(resultData, detailedResponses, timeLeftSeconds) {
+            const submissionUUID = generateUUID(); 
+            const dataToInsert = {
+                student_id: submissionUUID,
+                quiz_id: STATIC_QUIZ_UUID,
+                score: resultData.score,
+                total_questions: resultData.total,
+                percentage: resultData.percentage.toString(), 
+                total_violations: resultData.violations,
+                window_switch_violations: resultData.windowSwitchViolations, 
+                copy_paste_violations: resultData.copyPasteViolations,
+                submission_time: new Date().toISOString(),
+                student_name: resultData.name,
+                college_email: resultData.email,
+                admission_no: resultData.admissionNo,
+                // --- ADDED NEW FIELDS ---
+                time_left_seconds: timeLeftSeconds,
+                student_responses_json: detailedResponses,
+                // --- END ADDED NEW FIELDS ---
+            };
+            try {
+                const { error } = await client.from(SUPABASE_SUBMISSIONS_TABLE).insert([dataToInsert]); 
+                if (error) throw error; 
+                return { success: true };
+            } catch (e) {
+                console.error('Upload Exception:', e);
+                if(e.message && e.message.includes("row-level security")) {
+                    return { success: false, message: "DATABASE PERMISSION ERROR: Check RLS policies on 'quiz_submissions' table." };
+                }
+                return { success: false, message: e.message || "Unknown error during submission upload" };
+            }
+        }
+
+        // --- QUESTION FETCH LOGIC (Dynamically loads Q&A) ---
+        async function fetchQuizQuestionsFromSupabase() {
+            LOADING_OVERLAY.style.display = 'flex';
+            try {
+                // Fetch all required columns from your new table
+                const { data, error } = await client
+                    .from(SUPABASE_QUESTIONS_TABLE)
+                    .select('question, answer, option_a, option_b, option_c, option_d');
+                
+                if (error) throw error;
+
+                if (data.length === 0) {
+                    showTempMessage("No quiz questions found in the database. Contact admin.", true);
+                    return false;
+                }
+
+                // Map the flat database data into the required JavaScript structure
+                quizQuestions = data.map(q => ({
+                    question: q.question,
+                    options: [q.option_a, q.option_b, q.option_c, q.option_d],
+                    answer: q.answer
+                }));
+                
+                // Re-initialize state arrays
+                studentResponses = Array(quizQuestions.length).fill(null);
+                questionStatus = Array(quizQuestions.length).fill(0); // 0=unvisited
+                questionFlags = Array(quizQuestions.length).fill(false);
+
+                return true;
+            } catch (e) {
+                console.error('Fetch Questions Exception:', e);
+                showTempMessage("Failed to load quiz questions: " + e.message, true);
+                return false;
+            } finally {
+                LOADING_OVERLAY.style.display = 'none';
+            }
+        }
+        // --- END: QUESTION FETCH LOGIC ---
+
+
+        // --- PROCTORING LOGIC ---
+        function requestFullScreen() {
+            const element = document.documentElement;
+            if (element.requestFullscreen) {
+                element.requestFullscreen().catch(e => {
+                    console.error("Fullscreen Request Failed on user click:", e);
+                    showTempMessage('Browser blocked automatic Full Screen. Please click the full screen icon manually.', true);
+                });
+            }
+            else if (element.mozRequestFullScreen) element.mozRequestFullScreen();
+            else if (element.webkitRequestFullscreen) element.webkitRequestFullscreen();
+            else if (element.msRequestFullscreen) element.msRequestFullscreen();
+        }
+
+        function exitFullScreen() {
+            if (document.exitFullscreen && document.fullscreenElement) document.exitFullscreen();
+            else if (document.mozCancelFullScreen) document.mozCancelFullScreen();
+            else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+            else if (document.msExitFullscreen) document.msExitFullscreen();
+        }
+        
+        function showViolationModal(isTerminating, reason) {
+            if (isQuizSubmitted) return; // Important safety check
+
+            if (isTerminating) {
+                VIOLATION_MESSAGE.innerHTML = `<p class="text-red-700 font-bold mb-2 text-lg">EXAM TERMINATED</p><p>You exceeded the limit of ${MAX_VIOLATIONS} violations. The exam will now be submitted.</p>`;
+                MODAL_CONFIRM_BTN.textContent = 'Submit Exam Now';
+                MODAL_CONFIRM_BTN.className = "w-full py-3 px-4 rounded-lg text-white font-bold bg-red-700 hover:bg-red-800 transition shadow-lg";
+                
+                stopTotalTimer(); // Changed to stopTotalTimer
+                disableProctoring(); 
+                exitFullScreen();
+                
+                MODAL_CONFIRM_BTN.onclick = () => {
+                    VIOLATION_MODAL.style.display = 'none';
+                    calculateAndShowResults(true); 
+                };
+            } else {
+                clearInterval(extensionCheckInterval); 
+                
+                let detailMsg = "Suspicious activity detected.";
+                if (reason === 'swipedown') detailMsg = "Do not swipe from the **top edge** (Notification Panel).";
+                else if (reason === 'swipeleft' || reason === 'swiperight') detailMsg = "Do not swipe from the **side edges** (Browser Navigation).";
+                else if (reason === 'swipeup') detailMsg = "Do not swipe from the **bottom edge** (Control Center/Home Bar).";
+                else if (reason === 'blur') detailMsg = "Do not switch apps, minimize the browser, or lose focus.";
+                else if (reason === 'copypaste') detailMsg = "Copy/Paste is strictly prohibited.";
+                else if (reason === 'screenshot') detailMsg = "Unauthorized **screenshot attempt** detected."; 
+                else if (reason === 'extension') detailMsg = "Unauthorized **browser extension interference** detected.";
+
+                VIOLATION_MESSAGE.innerHTML = `
+                    <p class="text-lg font-bold text-gray-800 mb-2">⚠️ ${detailMsg}</p>
+                    <p class="text-sm text-gray-600">This incident has been recorded.</p>
+                    <div class="mt-4 p-2 bg-red-50 rounded border border-red-100">
+                        <p class="font-bold text-red-600">Violation ${proctoringViolations.total} of ${MAX_VIOLATIONS}</p>
+                    </div>
+                `;
+                
+                MODAL_CONFIRM_BTN.textContent = 'Resume Quiz (Enable Full Screen)';
+                MODAL_CONFIRM_BTN.className = "w-full py-3 px-4 rounded-lg text-white font-bold bg-yellow-600 hover:bg-yellow-700 transition shadow-md";
+                MODAL_CONFIRM_BTN.onclick = () => {
+                    VIOLATION_MODAL.style.display = 'none';
+                    
+                    extensionCheckInterval = setInterval(detectSpecificExtensionFootprints, EXTENSION_CHECK_INTERVAL); 
+                    
+                    requestFullScreen(); 
+                };
+            }
+            VIOLATION_MODAL.style.display = 'flex';
+        }
+
+        function handleProctoringViolation(type, reason) {
+            // <<< MODIFIED: Prevent all violations if quiz has been submitted
+            if (isQuizSubmitted) return; 
+            // Prevent violation counting if the state is unstable (e.g. timeout or termination processing)
+            if (currentQuestionIndex >= quizQuestions.length) return; 
+            // >>> END MODIFIED
+            
+            if (proctoringViolations.total >= MAX_VIOLATIONS) return; 
+            
+            if (type === 'windowSwitch') {
+                if (violationCooldown) return; 
+                
+                proctoringViolations.windowSwitch++; 
+                violationCooldown = true;
+                
+                setTimeout(() => { violationCooldown = false; }, WINDOW_SWITCH_COOLDOWN); 
+            } 
+            else if (type === 'copyPaste') {
+                proctoringViolations.copyPaste++;
+            }
+            else return; 
+            
+            proctoringViolations.total++;
+
+            const vDisplay = document.getElementById('violationCountDisplay');
+            if (vDisplay) vDisplay.innerHTML = `⚠️ Violations: ${proctoringViolations.total} / ${MAX_VIOLATIONS}`;
+
+            if (proctoringViolations.total >= MAX_VIOLATIONS) {
+                disableProctoring(); 
+                showViolationModal(true, reason); 
+                
+            }
+            else if (type === 'windowSwitch') {
+                    showViolationModal(false, reason); 
+            }
+        }
+        
+        function detectSpecificExtensionFootprints() {
+            if (currentQuestionIndex >= quizQuestions.length || violationCooldown || isQuizSubmitted) return; // Added isQuizSubmitted
+            
+            // Check 1: Known injected global properties from common extensions
+            if (window.Stranalytics || window.adblocker || window.betterTranslate || window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
+                handleProctoringViolation('windowSwitch', 'extension'); 
+                return;
+            }
+
+            // Check 2: Check for existence of Chrome/Firefox extension APIs
+            if (window.chrome && window.chrome.runtime) {
+                handleProctoringViolation('windowSwitch', 'extension');
+                return;
+            }
+        }
+        
+        const visibilityChangeHandler = () => { 
+            if (document.hidden) handleProctoringViolation('windowSwitch', 'blur'); 
+        };
+        
+        const blurHandler = () => { 
+            if(violationCooldown) return;
+            handleProctoringViolation('windowSwitch', 'blur'); 
+        };
+
+        const touchStartHandler = (e) => {
+            if (currentQuestionIndex >= quizQuestions.length || isQuizSubmitted) return; // Added isQuizSubmitted
+
+            if(e.touches && e.touches.length > 0) {
+                const touchX = e.touches[0].clientX;
+                const touchY = e.touches[0].clientY;
+                const screenWidth = window.innerWidth;
+                const screenHeight = window.innerHeight;
+                let reason = null;
+
+                if(touchY < TOP_EDGE_THRESHOLD) reason = 'swipedown';
+                else if(touchX < EDGE_THRESHOLD) reason = 'swipeleft';
+                else if(touchX > screenWidth - EDGE_THRESHOLD) reason = 'swiperight';
+                else if(touchY > screenHeight - EDGE_THRESHOLD) reason = 'swipeup';
+                
+                if (reason) {
+                    e.preventDefault(); 
+                    handleProctoringViolation('windowSwitch', reason);
+                }
+            }
+        };
+        
+        const copyCutPasteHandler = (e) => {
+            e.preventDefault();
+            showTempMessage('Content protected.', true); 
+            handleProctoringViolation('copyPaste', 'copypaste');
+        };
+
+        const screenshotKeyHandler = (e) => {
+            if (e.key === 'PrintScreen' || e.keyCode === 44) {
+                e.preventDefault(); 
+                showTempMessage('Screenshot attempt detected.', true); 
+                handleProctoringViolation('copyPaste', 'screenshot');
+            } 
+        };
+
+        function enableProctoring() {
+            document.addEventListener('visibilitychange', visibilityChangeHandler);
+            window.addEventListener('blur', blurHandler); 
+            document.addEventListener('touchstart', touchStartHandler, { passive: false });
+            document.addEventListener('copy', copyCutPasteHandler);
+            document.addEventListener('cut', copyCutPasteHandler);
+            document.addEventListener('paste', copyCutPasteHandler);
+            document.addEventListener('contextmenu', event => event.preventDefault());
+            document.addEventListener('keydown', screenshotKeyHandler); 
+
+            detectSpecificExtensionFootprints(); 
+            extensionCheckInterval = setInterval(detectSpecificExtensionFootprints, EXTENSION_CHECK_INTERVAL); 
+        }
+
+        function disableProctoring() {
+            clearInterval(extensionCheckInterval); 
+            document.removeEventListener('visibilitychange', visibilityChangeHandler);
+            window.removeEventListener('blur', blurHandler);
+            document.removeEventListener('touchstart', touchStartHandler);
+            document.removeEventListener('copy', copyCutPasteHandler);
+            document.removeEventListener('cut', copyCutPasteHandler);
+            document.removeEventListener('paste', copyCutPasteHandler);
+            document.removeEventListener('keydown', screenshotKeyHandler); 
+        }
+
+        // --- TIMER & NAVIGATION LOGIC (MODIFIED) ---
+
+        function updateTimerDisplay() {
+            const progressBar = document.getElementById('progressBar');
+            const countdownTimer = document.getElementById('countdownValue'); 
+
+            if (progressBar) progressBar.style.width = ((timeLeft / TOTAL_QUIZ_TIME) * 100) + '%';
+            if (countdownTimer) countdownTimer.textContent = formatTime(timeLeft);
+        }
+
+        function startTotalTimer() {
+            if (isTimerRunning) return; 
+
+            isTimerRunning = true;
+            updateTimerDisplay();
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                updateTimerDisplay();
+
+                // Auto-submit on timeout
+                if (timeLeft <= 0) {
+                    isQuizSubmitted = true; // Set submitted flag for timeout auto-submit
+                    stopTotalTimer();
+                    disableProctoring();
+                    exitFullScreen();
+                    // Auto-submit on finish (wasTerminated=true for time-out)
+                    calculateAndShowResults(true); 
+                }
+            }, 1000);
+        }
+
+        function stopTotalTimer() { 
+            clearInterval(timerInterval); 
+            isTimerRunning = false;
+        }
+
+        // New function to jump to a specific question (MODIFIED: Added time tracking)
+        function jumpToQuestion(index) {
+            if (index >= 0 && index < quizQuestions.length) {
+                // --- ADDED: TIME TRACKING FOR PREVIOUS QUESTION ---
+                const timeSpent = Math.max(0, Math.floor((Date.now() - currentQuestionStartTime) / 1000));
+                
+                // Log timing for the question we are leaving
+                if (currentQuestionIndex < quizQuestions.length) {
+                    questionTimings[currentQuestionIndex] = timeSpent;
+                }
+                
+                // Update the current question index
+                currentQuestionIndex = index;
+                // Set the start time for the new question
+                currentQuestionStartTime = Date.now();
+                // --- END ADDED TIME TRACKING ---
+
+                // Before changing, ensure the current question's status is at least 'viewed' if not answered
+                // FIX: This should be for the question we are moving *from*, but the logic relies on index being *new* one here.
+                // Re-enabling the correct status logic:
+                if (questionStatus[currentQuestionIndex] === 0) {
+                    questionStatus[currentQuestionIndex] = 1; // Mark as viewed
+                }
+                
+                renderQuizQuestion();
+                renderQuestionPanel(); // Re-render panel to highlight current question
+            }
+        }
+        
+        // New function to handle next/previous button clicks
+        function navigateQuestions(direction) {
+            const newIndex = currentQuestionIndex + direction;
+            if (newIndex >= 0 && newIndex < quizQuestions.length) {
+                jumpToQuestion(newIndex);
+            }
+        }
+        
+        function saveCurrentAnswer(value) {
+            studentResponses[currentQuestionIndex] = value;
+            questionStatus[currentQuestionIndex] = 2; // Mark as answered (green)
+            renderQuestionPanel(); // Update panel to show question as answered
+        }
+        
+        // New function to toggle the flag status (MODIFIED: Added back showTempMessage for feedback)
+        function toggleFlag() {
+            questionFlags[currentQuestionIndex] = !questionFlags[currentQuestionIndex];
+            
+            const msg = questionFlags[currentQuestionIndex] ? 'Question Flagged for Review' : 'Flag Removed';
+            showTempMessage(msg); // ADDED: Visual feedback
+            
+            renderQuizQuestion(); // Re-render to update the flag button state
+            renderQuestionPanel(); // Re-render to update the flag icon in the panel
+        }
+
+        // --- RENDERING VIEWS ---
+
+        async function renderSignIn() { // <<< MODIFIED: Function made async
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-md bg-white rounded-xl shadow-2xl p-8">
+                    <h2 class="text-3xl font-extrabold text-center text-gray-900 mb-6">Quiz Sign-In</h2>
+                    
+                    <div id="loadingQuestionsIndicator" class="text-center p-4 bg-yellow-50 rounded-lg border border-yellow-200 mb-4">
+                        <div class="spinner mx-auto mb-2"></div>
+                        <p class="text-sm font-semibold text-gray-700">Loading quiz data...</p>
+                    </div>
+                    
+                    <form id="signInForm" class="space-y-4 mt-6">
+                        <div><label class="block text-sm font-medium text-gray-700">Name</label><input type="text" id="studentName" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
+                        <div><label class="block text-sm font-medium text-gray-700">Email</label><input type="email" id="collegeEmail" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
+                        <div><label class="block text-sm font-medium text-gray-700">Admission No.</label><input type="text" id="admissionNo" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
+                        <button type="submit" id="startQuizBtn" class="w-full py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition mt-6 shadow-lg font-bold" disabled>Start Quiz</button>
+                        
+                        <button type="button" id="adminSignInButton" class="w-full py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition font-bold mt-2">
+                            <i class="fas fa-lock mr-2"></i>Admin Panel
+                        </button>
+                    </form>
+                </div>`;
+
+            const startQuizBtn = document.getElementById('startQuizBtn');
+            const loadingIndicator = document.getElementById('loadingQuestionsIndicator');
+
+            // <<< MODIFICATION 1 (Adapted): Fetch questions concurrently. Removed status fetch here.
+            const success = await fetchQuizQuestionsFromSupabase(); 
+            // END MODIFICATION 1 >>>
+            
+            if (loadingIndicator) loadingIndicator.style.display = 'none';
+
+            if (success) {
+                startQuizBtn.disabled = false;
+                startQuizBtn.textContent = `Start Quiz (${quizQuestions.length} Questions)`;
+            } else {
+                startQuizBtn.textContent = 'Quiz Data Load Failed';
+                startQuizBtn.className = startQuizBtn.className.replace('bg-green-600', 'bg-red-600').replace('hover:bg-green-700', 'hover:bg-red-700');
+                return;
+            }
+
+            // <<< MODIFICATION 2: ADDED EMAIL DOMAIN RESTRICTION HERE >>>
+            document.getElementById('signInForm').addEventListener('submit', function(e) { 
+                e.preventDefault();
+                
+                const emailInput = document.getElementById('collegeEmail'); 
+                const requiredDomain = '@glbimr.org'; 
+
+                studentInfo = {
+                    name: document.getElementById('studentName').value.trim(),
+                    email: emailInput.value.trim().toLowerCase(), 
+                    admissionNo: document.getElementById('admissionNo').value.trim()
+                };
+
+                // --- NEW VALIDATION LOGIC: Check for glbimr.org domain ---
+                if (!studentInfo.email.endsWith(requiredDomain)) {
+                    showTempMessage(`Login restricted. Only emails from ${requiredDomain} are allowed.`, true);
+                    emailInput.value = ''; // Optionally clear the email field
+                    emailInput.focus(); 
+                    return; // STOP: Do not proceed to rules or quiz
+                }
+                // --- END VALIDATION LOGIC ---
+
+                // Move to Proctoring Rules view after successful sign-in
+                setView('proctoringRules');
+            });
+            // END MODIFICATION 2 >>>
+            
+            document.getElementById('adminSignInButton').onclick = () => setView('admin');
+        }
+
+        function renderProctoringRules() {
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-lg bg-white rounded-xl shadow-2xl p-8">
+                    <h2 class="text-3xl font-extrabold text-center text-red-700 mb-6">⚠️ Proctoring Rules</h2>
+                    <p class="text-center text-gray-600 mb-6">You must agree to these rules before starting the exam.</p>
+                    
+                    <div class="p-5 bg-yellow-70 border border-yellow-200 rounded-lg">
+                        <p class="font-bold text-red-800 text-lg mb-3"><i class="fas fa-ban mr-2"></i>STRICT PROCTORING RULES:</p>
+                        <ul class="list-disc ml-6 mt-2 space-y-3 text-sm text-red-900 font-medium">
+                            <li>Use of any AI tools, extensions, tab-switch, copy/paste/screenshot shall be considered as a violation of rules.</li>
+
+                        </ul>
+                        <p class="mt-4 p-2 bg-red-100 border border-red-200 rounded text-xs text-center font-bold text-red-700">All forms of interference are logged and will lead to immediate termination of the exam after ${MAX_VIOLATIONS} warnings.</p>
+                    </div>
+
+                    <div class="flex items-center mt-6">
+                        <input type="checkbox" id="rulesCheckbox" class="h-5 w-5 text-green-600 border-gray-300 rounded focus:ring-green-500">
+                        <label for="rulesCheckbox" class="ml-3 text-sm font-medium text-gray-700">I have read and agree to all the rules above.</label>
+                    </div>
+
+                    <button id="agreeAndStartBtn" class="w-full py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition mt-6 shadow-lg font-bold" disabled>
+                        Agree & Start Quiz
+                    </button>
+                    <button id="cancelBtn" class="w-full py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition font-bold mt-2">
+                        Cancel & Return to Sign-In
+                    </button>
+                </div>
+            `;
+            
+            const checkbox = document.getElementById('rulesCheckbox');
+            const startBtn = document.getElementById('agreeAndStartBtn');
+            const cancelBtn = document.getElementById('cancelBtn');
+
+            checkbox.onchange = () => { startBtn.disabled = !checkbox.checked; };
+            cancelBtn.onclick = () => setView('signin');
+
+            // <<< MODIFICATION 3: Added async handler with quiz active status check
+            startBtn.onclick = async () => {
+                // Ensure the button is disabled during the check to prevent double click
+                startBtn.disabled = true; 
+                startBtn.textContent = 'Checking quiz status...';
+                
+                const currentStatus = await fetchQuizActiveStatus(); 
+                
+                if (!currentStatus) { 
+                    showQuizOffModal(); 
+                    startBtn.textContent = 'Agree & Start Quiz';
+                    startBtn.disabled = false; // Re-enable for another attempt if not terminated
+                    return; 
+                }
+                
+                // If active, proceed with quiz start
+                shuffleArray(quizQuestions); 
+                requestFullScreen();
+                enableProctoring();
+                
+                // Initialize the first question's status as 'viewed' upon starting
+                if (quizQuestions.length > 0) {
+                     questionStatus[0] = 1;
+                }
+
+                // --- ADDED: Initialize Timings ---
+                questionTimings = Array(quizQuestions.length).fill(0);
+                currentQuestionStartTime = Date.now();
+                // --- END ADDED ---
+
+                setView('quiz');
+            };
+            // END MODIFICATION 3 >>>
+        }
+
+        // Modified renderQuiz to accommodate the new structure (REMOVED LEGEND HERE)
+        function renderQuiz() {
+            APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-6xl grid grid-cols-1 md:grid-cols-4 gap-4 mt-10">
+                    <div class="md:col-span-3 bg-white rounded-2xl shadow-xl p-8 relative">
+                        <div class="mb-4 flex justify-between items-center">
+                            <h2 class="text-2xl font-bold text-gray-800">Question <span id="questionNumberDisplay">1</span> / ${quizQuestions.length}</h2>
+                            <button id="flagButton" class="px-4 py-2 rounded-lg text-sm font-semibold border transition shadow-sm"></button>
+                        </div>
+                        <div id="progressBarContainer"><div id="progressBar"></div></div>
+                        <div id="quizContent"></div>
+                    </div>
+
+                    <div class="md:col-span-1 bg-white rounded-2xl shadow-xl p-6 sticky top-4 self-start">
+                        <div id="countdownTimer">Time Remaining: <span id="countdownValue">${formatTime(timeLeft)}</span></div>
+                        <h3 class="text-lg font-bold text-gray-800 mb-3 mt-4">Question Status</h3>
+                        <div id="questionPanel" class="grid grid-cols-5 gap-2">
+                            </div>
+                        
+                        <p id="violationCountDisplay" class="text-sm text-center text-gray-500 font-mono pt-4 mt-6"></p>
+                    </div>
+                </div>`;
+                
+            startTotalTimer(); // Start the total quiz timer
+            renderQuizQuestion();
+            renderQuestionPanel();
+            
+            // Event listener for flag button - CORRECTLY ATTACHED HERE
+            const flagButton = document.getElementById('flagButton');
+            if (flagButton) {
+                flagButton.onclick = toggleFlag;
+            }
+        }
+
+        // New function to render the Question Navigation Panel
+        function renderQuestionPanel() {
+            const panel = document.getElementById('questionPanel');
+            if (!panel) return;
+            
+            panel.innerHTML = quizQuestions.map((q, index) => {
+                const status = questionStatus[index]; // 0=unvisited, 1=viewed, 2=answered
+                const isFlagged = questionFlags[index];
+                
+                let statusClass = 'unvisited'; 
+                if (status === 1) statusClass = 'viewed'; // Yellow
+                if (status === 2) statusClass = 'answered'; // Green
+                
+                if (index === currentQuestionIndex) statusClass = 'current'; // Blue for current
+
+                return `
+                    <button class="q-panel-btn ${statusClass} ${isFlagged ? 'flagged' : ''}" onclick="jumpToQuestion(${index})">
+                        ${index + 1}
+                        ${isFlagged ? '<i class="fas fa-flag flag-icon"></i>' : ''}
+                    </button>
+                `;
+            }).join('');
+        }
+
+
+        // Modified renderQuizQuestion for state persistence, new navigation, and flag button update
+        function renderQuizQuestion() {
+            const q = quizQuestions[currentQuestionIndex];
+            const quizContent = document.getElementById('quizContent');
+            const qNumDisplay = document.getElementById('questionNumberDisplay');
+            const flagButton = document.getElementById('flagButton'); // Get button element
+
+            
+            if(qNumDisplay) qNumDisplay.textContent = currentQuestionIndex + 1;
+
+            const optionsToRender = [...q.options];
+            shuffleArray(optionsToRender);
+            
+            // Determine button visibility
+            const isFirst = currentQuestionIndex === 0;
+            const isLast = currentQuestionIndex === quizQuestions.length - 1;
+            const isFlagged = questionFlags[currentQuestionIndex];
+            
+            // Update Flag button display
+            if (flagButton) {
+                if (isFlagged) {
+                    flagButton.innerHTML = `<i class="fas fa-flag mr-2"></i> Flagged (Click to Unflag)`;
+                    flagButton.className = "px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-red-100 text-red-700 border-red-400 hover:bg-red-200";
+                } else {
+                    flagButton.innerHTML = `<i class="far fa-flag mr-2"></i> Flag for Review`;
+                    flagButton.className = "px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-yellow-100 text-gray-700 border-yellow-400 hover:bg-yellow-200";
+                }
+            }
+
+            // --- START: ADDED STUDENT INFO BLOCK ---
+            const studentInfoBlock = `
+                <div class="p-3 bg-gray-50 rounded-lg border border-gray-200 mb-6 text-sm">
+                    <p class="font-bold text-gray-800">Student: <span class="font-normal text-indigo-700">${studentInfo.name || 'N/A'}</span></p>
+                    <p class="font-bold text-gray-800">Admission No.: <span class="font-normal text-indigo-700">${studentInfo.admissionNo || 'N/A'}</span></p>
+                </div>
+            `;
+            // --- END: ADDED STUDENT INFO BLOCK ---
+
+            quizContent.innerHTML = `
+                ${studentInfoBlock}
+                <div class="mb-6"><h3 class="text-xl font-semibold text-gray-800">${q.question}</h3></div>
+                <div class="space-y-4" id="optionsContainer">
+                    ${optionsToRender.map(opt => `
+                        <label class="flex items-center p-4 border rounded-xl cursor-pointer hover:bg-blue-50 transition">
+                            <input type="radio" name="answer" value="${opt}" class="h-5 w-5 text-blue-600" ${studentResponses[currentQuestionIndex] === opt ? 'checked' : ''}>
+                            <span class="ml-4 text-gray-700 select-none">${opt}</span>
+                        </label>`).join('')}
+                </div>
+                
+                <div class="flex justify-between mt-8">
+                    <button id="prevButton" class="px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 shadow-md font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}" ${isFirst ? 'disabled' : ''}>
+                        <i class="fas fa-arrow-left mr-2"></i> Previous
+                    </button>
+                    
+                    <button id="nextButton" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-semibold ${isLast ? 'hidden' : ''}">
+                        Next <i class="fas fa-arrow-right ml-2"></i>
+                    </button>
+
+                    <button id="submitButton" class="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-green-700 shadow-md font-semibold ${isLast ? '' : 'hidden'}">
+                        <i class="fas fa-paper-plane mr-2"></i> Submit Final Exam
+                    </button>
+                </div>
+                
+                <p id="violationCountDisplay" class="mt-4 text-sm text-right text-gray-500 font-mono">⚠️ Violations: ${proctoringViolations.total} / ${MAX_VIOLATIONS}</p>
+            `;
+
+            document.getElementById('optionsContainer').onchange = (e) => {
+                if (e.target.name === 'answer') saveCurrentAnswer(e.target.value);
+            };
+
+            document.getElementById('prevButton').onclick = () => navigateQuestions(-1);
+            document.getElementById('nextButton').onclick = () => navigateQuestions(1);
+
+            if (document.getElementById('submitButton')) {
+                 document.getElementById('submitButton').onclick = () => {
+                    // <<< MODIFIED: Set flag before disabling
+                    isQuizSubmitted = true; 
+                    // Confirmation pop-up removed to prevent proctoring violation.
+                    stopTotalTimer();
+                    disableProctoring();
+                    exitFullScreen();
+                    calculateAndShowResults(false);
+                };
+            }
+            
+            renderQuestionPanel(); // Ensure panel reflects changes after navigating
+        }
+
+        // MODIFIED: Added logic to log final question time and compile detailed report
+        async function calculateAndShowResults(wasTerminated) {
+            LOADING_OVERLAY.style.display = 'flex';
+            
+            // --- ADDED: Log time for the final question and compile detailed report ---
+            const timeSpentFinal = Math.max(0, Math.floor((Date.now() - currentQuestionStartTime) / 1000));
+            if (currentQuestionIndex < quizQuestions.length) { // Check to ensure we are still within bounds
+                questionTimings[currentQuestionIndex] = timeSpentFinal;
+            }
+            
+            let score = 0;
+            quizQuestions.forEach((q, idx) => { if (studentResponses[idx] === q.answer) score++; });
+            
+            // Create the detailed submission report JSON
+            const detailedResponses = quizQuestions.map((q, idx) => ({
+                question_number: idx + 1,
+                question_text: q.question, // Include question text for easy report viewing
+                student_response: studentResponses[idx],
+                correct_answer: q.answer,
+                is_correct: studentResponses[idx] === q.answer,
+                time_spent_seconds: questionTimings[idx] || 0 // Use logged time or 0
+            }));
+            // --- END ADDED ---
+
+            const result = saveResultLocally(studentInfo.name, studentInfo.email, studentInfo.admissionNo, score, quizQuestions.length, proctoringViolations);
+            
+            // MODIFIED: Pass detailedResponses and timeLeft to the upload function
+            const uploadStatus = await uploadResultToSupabase(result, detailedResponses, timeLeft);
+            
+            LOADING_OVERLAY.style.display = 'none';
+            renderFinalScreen(score, wasTerminated, uploadStatus);
+        }
+
+        function renderFinalScreen(score, wasTerminated, uploadStatus) {
+            const statusClass = uploadStatus.success ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
+            const statusIcon = uploadStatus.success ? 'fa-check-circle' : 'fa-exclamation-circle';
+            const statusMsg = uploadStatus.success ? 'Saved to Database' : 'Upload Failed';
+            const errorDetail = uploadStatus.success ? '' : `<p class="text-xs mt-2 text-red-600 font-bold break-words p-2 bg-red-50 rounded border border-red-200">${uploadStatus.message}</p>`;
+
+            // Icon HTML (Red emergency sign for termination/timeout, Green for submission)
+            let mainIconHtml = '';
+            if (wasTerminated) {
+                mainIconHtml = `
+                    <div class="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-6">
+                        <i class="fas fa-exclamation-triangle text-3xl text-red-600"></i>
+                    </div>
+                `;
+            } else {
+                mainIconHtml = `
+                    <div class="inline-flex items-center justify-center w-16 h-16 bg-green-100 rounded-full mb-6">
+                        <i class="fas fa-check-circle text-3xl text-green-600"></i>
+                    </div>
+                `;
+            }
+            
+            // Submission Status Block
+            const submissionStatusHtml = `
+                <div class="mb-6 p-3 rounded-lg ${statusClass} inline-block w-full">
+                    <div class="flex items-center justify-center">
+                        <i class="fas ${statusIcon} mr-2"></i> <span class="font-bold">${statusMsg}</span>
+                    </div>
+                    ${errorDetail}
+                </div>
+            `;
+            
+            // Student Info Block
+            const studentInfoHtml = `
+                <div class="bg-gray-50 p-4 rounded-lg mb-6 border border-gray-200">
+                    <p class="text-xl font-bold text-gray-900">${studentInfo.name}</p>
+                    <p class="text-sm text-gray-500 mt-1">Admission No: <span class="font-mono text-gray-700 font-semibold">${studentInfo.admissionNo}</span></p>
+                </div>
+            `;
+            
+            // --- MODIFICATION: Reorder submission status and student info blocks ---
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl p-10 text-center">
+                    ${mainIconHtml}
+                    <h2 class="text-3xl font-extrabold text-gray-900 mb-3">${wasTerminated ? 'Exam Terminated' : 'Quiz Submitted'}</h2>
+                    
+                    ${submissionStatusHtml} ${studentInfoHtml} <div class="bg-blue-50 p-6 rounded-xl mb-8 text-left">
+                        <div class="flex justify-between mb-2"><span>Score:</span><span class="font-bold">${score} / ${quizQuestions.length}</span></div>
+                        
+                        <div class="border-t border-blue-100 pt-3 mt-3">
+                            <div class="flex justify-between mb-1"><span class="font-bold">Total Violations Recorded:</span><span class="font-bold text-red-600">${proctoringViolations.total}</span></div>
+                            <div class="flex justify-between text-sm text-gray-700"><span>(Window Switch / Extension / Focus Loss):</span><span class="font-bold">${proctoringViolations.windowSwitch} incidents</span></div>
+                            <div class="flex justify-between text-sm text-gray-700"><span>(Copy/Paste / Screenshot Attempt):</span><span class="font-bold">${proctoringViolations.copyPaste} incidents</span></div>
+                        </div>
+                    </div>
+
+                    <button onclick="window.location.reload()" class="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Return to Sign-In</button>
+                </div>
+            `;
+        }
+
+
+        function renderAdminLogin() {
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-sm bg-white rounded-xl shadow-xl p-8">
+                    <h2 class="text-2xl font-bold text-center mb-6">Admin Login</h2>
+                    <form id="adminLoginForm" class="space-y-4">
+                        <input type="text" id="adminId" placeholder="Admin ID" required class="w-full px-4 py-2 border rounded-lg">
+                        <input type="password" id="adminPassword" placeholder="Password" required class="w-full px-4 py-2 border rounded-lg">
+                        <button type="submit" class="w-full py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Login</button>
+                        <button type="button" onclick="setView('signin')" class="w-full py-2 text-gray-600 border rounded-lg hover:bg-gray-50">Cancel</button>
+                    </form>
+                </div>`;
+            
+            document.getElementById('adminLoginForm').onsubmit = async (e) => {
+                e.preventDefault();
+                const adminId = document.getElementById('adminId').value;
+                const adminPassword = document.getElementById('adminPassword').value;
+                
+                // --- SECURE LOGIN VIA SUPABASE RPC ---
+                try {
+                    const { data, error } = await client.rpc('verify_admin_credentials', {
+                        input_id: adminId,
+                        input_password: adminPassword
+                    });
+
+                    if (error || typeof data !== 'boolean') {
+                        console.error('Login RPC Error:', error);
+                        showTempMessage('Database Error during login.', true);
+                        return;
+                    }
+
+                    if (data === true) {
+                        setView('leaderboard');
+                    } else {
+                        showTempMessage('Invalid Credentials', true);
+                    }
+
+                } catch (e) {
+                    console.error('Admin Login Exception:', e);
+                    showTempMessage('An unexpected error occurred during login.', true);
+                }
+                // --- END SECURE LOGIN ---
+            };
+        }
+
+        // --- NEW: FUNCTION TO PRINT/SAVE AS PDF ---
+        function saveReportAsPdf() {
+            // Set a print-specific title
+            document.title = 'Quiz Report - ' + (document.querySelector('#reportContainer h2').textContent || 'Submission');
+
+            window.print();
+            
+            // Restore original title after printing is initiated
+            document.title = 'ISB Quiz-1'; 
+            
+            // NOTE: The user must select "Save as PDF" in their browser's print dialogue.
+        }
+        // --- END NEW FUNCTION ---
+
+        // --- MODIFIED: FUNCTION TO RENDER DETAILED REPORT ---
+        async function renderSubmissionReport(submissionId) {
+            LOADING_OVERLAY.style.display = 'flex';
+
+            try {
+                const { data, error } = await client
+                    .from(SUPABASE_SUBMISSIONS_TABLE)
+                    .select('*')
+                    .eq('id', submissionId)
+                    .single();
+
+                if (error || !data) throw error || new Error("Submission not found.");
+
+                const reportData = data.student_responses_json || [];
+
+                // Calculate total time spent on questions 
+                const totalTimeSpent = reportData.reduce((sum, q) => sum + (q.time_spent_seconds || 0), 0);
+                const timeRemaining = data.time_left_seconds || 0;
+                const totalQuizDuration = TOTAL_QUIZ_TIME;
+
+                // Render the report view
+                APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
+                APP_CONTAINER.innerHTML = `
+                    <div class="w-full max-w-6xl bg-white rounded-2xl shadow-xl p-8 mt-10" id="reportContainer">
+                        <div class="flex justify-between items-center mb-6 border-b pb-4 no-print">
+                            <h2 class="text-2xl font-bold text-indigo-700">Quiz Submission Report</h2>
+                            <div class="flex space-x-3">
+                                <button onclick="saveReportAsPdf()" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 shadow text-sm"><i class="fas fa-file-pdf mr-1"></i> Save as PDF</button>
+                                <button onclick="setView('leaderboard')" class="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 shadow text-sm"><i class="fas fa-arrow-left mr-1"></i> Back to Leaderboard</button>
+                            </div>
+                        </div>
+                        
+                        <h1 class="text-3xl font-bold text-indigo-700 mb-6 hidden print:block">Quiz Submission Report</h1>
+
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                            <div class="p-4 bg-gray-50 rounded-lg border">
+                                <p class="text-sm font-semibold text-gray-500">Student Name</p>
+                                <p class="text-xl font-bold text-gray-900">${data.student_name}</p>
+                            </div>
+                            <div class="p-4 bg-gray-50 rounded-lg border">
+                                <p class="text-sm font-semibold text-gray-500">Admission No.</p>
+                                <p class="text-xl font-bold text-gray-900">${data.admission_no}</p>
+                            </div>
+                            <div class="p-4 bg-green-50 rounded-lg border border-green-200">
+                                <p class="text-sm font-semibold text-green-700">Score</p>
+                                <p class="text-xl font-bold text-green-900">${data.score} / ${data.total_questions} (${data.percentage}%)</p>
+                            </div>
+                            <div class="p-4 bg-red-50 rounded-lg border border-red-200">
+                                <p class="text-sm font-semibold text-red-700">Total Violations</p>
+                                <p class="text-xl font-bold text-red-900">${data.total_violations}</p>
+                            </div>
+                        </div>
+
+                        <div class="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
+                            <p class="text-lg font-bold text-blue-800 mb-3"><i class="far fa-clock mr-2"></i> Timing Analysis</p>
+                            <div class="grid grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <p class="font-medium text-gray-700">Quiz Duration:</p>
+                                    <p class="font-bold text-gray-900">${formatTime(totalQuizDuration)}</p>
+                                </div>
+                                <div>
+                                    <p class="font-medium text-gray-700">Total Time Spent on Questions:</p>
+                                    <p class="font-bold text-gray-900">${formatTime(totalTimeSpent)}</p>
+                                </div>
+
+                            </div>
+                        </div>
+                        
+                        <h3 class="text-xl font-bold text-gray-800 mb-4">Question Breakdown</h3>
+                        <div class="space-y-6">
+                            ${reportData.map(q => {
+                                // Logic to determine status, class, and icon
+                                const isAnswered = q.student_response !== null && q.student_response !== undefined;
+                                let cardClass = 'bg-gray-100 border-gray-300'; // Default: Not Attempted (Light Tone)
+                                let iconClass = 'fa-question-circle text-gray-600';
+                                let responseText = '<span class="italic text-gray-500">No Answer</span>';
+                                
+                                if (isAnswered) {
+                                    responseText = q.student_response;
+                                    if (q.is_correct) {
+                                        cardClass = 'bg-green-50 border-green-300'; // Correct (Green)
+                                        iconClass = 'fa-check-circle text-green-600';
+                                    } else {
+                                        cardClass = 'bg-red-50 border-red-300'; // Incorrect (Red)
+                                        iconClass = 'fa-times-circle text-red-600';
+                                    }
+                                }
+
+                                return `
+                                    <div class="p-5 rounded-lg border-2 ${cardClass} shadow-sm">
+                                        <div class="flex justify-between items-center mb-3">
+                                            <h4 class="text-lg font-bold text-gray-800">Q${q.question_number}: ${q.question_text}</h4>
+                                            <div class="flex items-center space-x-4">
+                                                <span class="text-sm font-semibold text-gray-700">Time Spent: <span class="font-bold text-indigo-700">${q.time_spent_seconds}s</span></span>
+                                                <i class="fas ${iconClass} text-2xl"></i>
+                                            </div>
+                                        </div>
+                                        <div class="space-y-2">
+                                            <p class="text-sm"><span class="font-medium text-gray-700">Student Response:</span> <span class="font-bold">${responseText}</span></p>
+                                            <p class="text-sm"><span class="font-medium text-gray-700">Correct Answer:</span> <span class="font-bold text-green-700">${q.correct_answer}</span></p>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+
+            } catch (e) {
+                console.error('Error fetching submission report:', e);
+                showTempMessage(`Failed to load report: ${e.message}`, true);
+                setView('leaderboard'); // Return to leaderboard on error
+            } finally {
+                LOADING_OVERLAY.style.display = 'none';
+            }
+        }
+        // --- END MODIFIED FUNCTION ---
+
+        async function renderLeaderboard() { // <<< MODIFIED: Function made async
+            APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-6xl bg-white rounded-2xl shadow-xl p-8 mt-10">
+                    <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+                        <h2 class="text-2xl font-bold text-gray-800">Leaderboard</h2>
+                        <div class="flex flex-wrap gap-2">
+                            <button id="refreshBtn" class="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg shadow text-sm"><i class="fas fa-sync-alt mr-1"></i> Refresh</button>
+                            <button id="quizToggle" class="px-4 py-2 text-white rounded-lg bg-gray-400 text-sm" disabled>Loading Status...</button>
+                            <button id="homeBtn" class="px-4 py-2 border rounded-lg text-blue-600 border-blue-600 hover:bg-blue-50 text-sm">Log Out</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <div><label class="block text-xs font-semibold text-gray-500 mb-1">SEARCH</label><input type="text" id="searchInput" placeholder="Name or Admission No..." class="w-full border rounded-lg px-3 py-2 text-sm"></div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-500 mb-1">SORT BY</label>
+                            <select id="sortSelect" class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                                <option value="score_desc">Highest Score</option>
+                                <option value="score_asc">Lowest Score</option>
+                                <option value="violation_desc">Most Violations</option>
+                                <option value="date_desc">Newest First</option>
+                                <option value="date_asc">Oldest First</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-500 mb-1">TIME FILTER</label>
+                            <select id="dateFilter" class="w-full border rounded-lg px-3 py-2 text-sm bg-white"><option value="all">All Time</option><option value="today">Today</option></select>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto rounded-lg border">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-100">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">#</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Student & Email</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Adm No</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Score</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Violations</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Date</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Report</th> </tr>
+                            </thead>
+                            <tbody id="leaderboardBody" class="bg-white divide-y divide-gray-200">
+                                <tr><td colspan="7" class="p-10 text-center"><div class="spinner mx-auto"></div><p class="text-gray-500">Loading Data...</p></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>`;
+
+            // <<< MODIFICATION 4: Fetch status on load and update button
+            await fetchQuizActiveStatus();
+            const quizToggleBtn = document.getElementById('quizToggle');
+
+            quizToggleBtn.disabled = false;
+            quizToggleBtn.textContent = `Quiz: ${isQuizActive ? 'ON' : 'OFF'}`;
+            quizToggleBtn.className = `px-4 py-2 text-white rounded-lg ${isQuizActive ? 'bg-green-600' : 'bg-red-600'} text-sm`;
+            // END MODIFICATION 4 >>>
+
+            const fetchAndRender = async () => {
+                const tbody = document.getElementById('leaderboardBody');
+                // MODIFIED: Colspan is 7
+                tbody.innerHTML = `<tr><td colspan="7" class="p-10 text-center"><div class="spinner mx-auto"></div><p class="text-gray-500">Updating...</p></td></tr>`;
+                const searchTerm = document.getElementById('searchInput').value.trim();
+                const sortValue = document.getElementById('sortSelect').value;
+                const dateFilter = document.getElementById('dateFilter').value;
+                let query = client.from(SUPABASE_SUBMISSIONS_TABLE).select('*');
+                if (searchTerm) query = query.or(`student_name.ilike.%${searchTerm}%,admission_no.ilike.%${searchTerm}%`);
+                if (dateFilter === 'today') { const todayStart = new Date(); todayStart.setHours(0,0,0,0); query = query.gte('submission_time', todayStart.toISOString()); }
+                switch(sortValue) {
+                    case 'score_desc': query = query.order('score', { ascending: false }); break;
+                    case 'score_asc': query = query.order('score', { ascending: true }); break;
+                    case 'violation_desc': query = query.order('total_violations', { ascending: false }); break;
+                    case 'date_desc': query = query.order('submission_time', { ascending: false }); break;
+                    case 'date_asc': query = query.order('submission_time', { ascending: true }); break;
+                    default: query = query.order('score', { ascending: false });
+                }
+                if (!sortValue.includes('date')) query = query.order('submission_time', { ascending: false });
+
+                try {
+                    const { data, error } = await query;
+                    if (error) throw error;
+                    // MODIFIED: Colspan is 7
+                    if (!data || data.length === 0) { tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-gray-500">No records found matching criteria.</td></tr>`; return; }
+                    tbody.innerHTML = data.map((entry, i) => {
+                        return `
+                        <tr class="${i%2?'bg-gray-50':'bg-white'} hover:bg-gray-100 transition">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">${i+1}</td>
+                            
+                            <td class="px-6 py-4"> 
+                                <p class="text-sm font-medium text-gray-900">${entry.student_name || 'Unknown'}</p>
+                                <p class="text-xs text-gray-500">${entry.college_email || 'N/A'}</p>
+                            </td>
+
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${entry.admission_no || '-'}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-bold">${entry.score} / ${entry.total_questions || 20}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm ${entry.total_violations>0?'text-red-600 font-bold':'text-green-600'}">${entry.total_violations || 0}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">${entry.submission_time ? new Date(entry.submission_time).toLocaleString() : 'N/A'}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                <button onclick="renderSubmissionReport('${entry.id}')" class="text-indigo-600 hover:text-indigo-900 font-semibold text-xs py-1 px-3 border border-indigo-200 rounded-lg hover:bg-indigo-50 transition">View Report</button>
+                            </td> </tr>`;
+                    }).join('');
+                    // MODIFIED: Colspan is 7
+                } catch (err) { console.error(err); tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-red-600">Error: ${err.message}</td></tr>`; }
+            };
+
+            document.getElementById('homeBtn').onclick = () => setView('signin');
+            
+            // <<< MODIFICATION 5: Toggle Quiz Status in Supabase
+            quizToggleBtn.onclick = async () => { 
+                const newStatus = !isQuizActive; 
+                
+                LOADING_OVERLAY.style.display = 'flex';
+                quizToggleBtn.disabled = true;
+
+                try {
+                    // Update the single row (assuming ID=1 for the status row, as suggested in the setup)
+                    const { error } = await client
+                        .from(SUPABASE_STATUS_TABLE)
+                        .update({ is_active: newStatus })
+                        .eq('id', 1); 
+                    
+                    if (error) throw error;
+                    
+                    isQuizActive = newStatus; 
+                    
+                } catch (e) {
+                    console.error('Update Quiz Status Exception:', e);
+                    showTempMessage("Failed to update quiz status in database. Check RLS policies.", true);
+                } finally {
+                    LOADING_OVERLAY.style.display = 'none';
+                    quizToggleBtn.disabled = false;
+                    // Update button text/color
+                    quizToggleBtn.textContent = `Quiz: ${isQuizActive ? 'ON' : 'OFF'}`;
+                    quizToggleBtn.className = `px-4 py-2 text-white rounded-lg ${isQuizActive ? 'bg-green-600' : 'bg-red-600'} text-sm`;
+                }
+            };
+            // END MODIFICATION 5 >>>
+
+            document.getElementById('refreshBtn').onclick = fetchAndRender;
+            document.getElementById('sortSelect').addEventListener('change', fetchAndRender);
+            document.getElementById('dateFilter').addEventListener('change', fetchAndRender);
+            let searchTimeout;
+            document.getElementById('searchInput').addEventListener('input', () => { 
+                clearTimeout(searchTimeout); 
+                searchTimeout = setTimeout(fetchAndRender, 500); 
+            });
+            fetchAndRender();
+        }
+
+        // --- INIT ---
+        document.addEventListener('DOMContentLoaded', () => {
+            setView('signin');
+            QUIZ_OFF_CONFIRM_BTN.onclick = () => { QUIZ_OFF_MODAL.style.display = 'none'; };
+            
+            const fsHandler = () => {
+                // <<< MODIFIED: Check if already submitted
+                if (isQuizSubmitted) return; 
+                
+                // If exiting fullscreen while quiz is active and modal is not showing, trigger a violation.
+                if (!document.fullscreenElement && !document.webkitFullscreenElement && currentQuestionIndex < quizQuestions.length && VIOLATION_MODAL.style.display !== 'flex' && proctoringViolations.total < MAX_VIOLATIONS) {
+                    handleProctoringViolation('windowSwitch', 'blur'); 
+                }
+            };
+            ['fullscreenchange','webkitfullscreenchange','mozfullscreenchange'].forEach(e => document.addEventListener(e, fsHandler));
+        });
+    </script>
+</body>
+</html>
